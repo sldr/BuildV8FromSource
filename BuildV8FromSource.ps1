@@ -1,4 +1,4 @@
-﻿$V8Version="11.6.189.22"
+﻿$V8Version="11.7.439.21"
 # Previous 11.5.150.16
 Function GetV8DebugArgs
 {
@@ -22,7 +22,6 @@ v8_enable_debugging_features=true
 v8_enable_disassembler=true
 v8_enable_object_print=true
 v8_enable_pointer_compression=false
-v8_enable_webassembly=false
 v8_generate_external_defines_header=true
 v8_optimized_debug=false
 v8_postmortem_support=true
@@ -53,7 +52,6 @@ v8_enable_debugging_features=false
 v8_enable_disassembler=true
 v8_enable_object_print=true
 v8_enable_pointer_compression=false
-v8_enable_webassembly=false
 v8_generate_external_defines_header=true
 v8_optimized_debug=true
 v8_postmortem_support=true
@@ -72,10 +70,10 @@ if ($VerbosePreference -eq "SilentlyContinue") {
 try {
     "V8 Build Starting" | timestamp | Write-Verbose
     if ($Args.Count -gt 1) {
-        throw 'Only supports 1 argument. Usage: "BuildV8FromSource.ps1 [update]"'
+        throw 'Only supports 1 argument. Usage: "BuildV8FromSource.ps1 [update|revertgit]"'
     }
-    if (($Args.Count -eq 1) -and ($Args[0] -cne "update")) {
-        throw 'Argument must be update. Usage: "BuildV8FromSource.ps1 [update]"'
+    if (($Args.Count -eq 1) -and !(($Args[0] -ceq "update") -or ($Args[0] -ceq "revertgit"))) {
+        throw 'Argument must be update. Usage: "BuildV8FromSource.ps1 [update|revertgit]"'
     }
     "  Check if VS2022 is installed" | timestamp | Write-Verbose
     $VSWhere = "C:\Program Files (x86)\Microsoft Visual Studio\Installer\vswhere.exe"
@@ -128,6 +126,22 @@ try {
     }
     Push-Location C:\build
     try {
+        if ($Args.Count -ne 0) {
+            if ($Args[0] -ceq "revertgit") {
+                "Revert git starting" | timestamp | Write-Verbose
+                cmd.exe /C "git -C .\v8\ checkout --force 2>&1"
+                if ($LASTEXITCODE -ne 0) {
+                    Throw 'revert git failed for "C:\build\v8\"'
+                }
+                cmd.exe /C "git -C .\v8\build\ checkout --force 2>&1"
+                if ($LASTEXITCODE -ne 0) {
+                    Throw 'revert git failed for "C:\build\v8\build\"'
+                }
+                Get-ChildItem -Attributes Directory -Path C:\build\v8\third_party\ | % { cmd.exe /C "git -C `"$($_.FullName)`" checkout --force 2>&1"; if ($LASTEXITCODE -ne 0) { Throw 'revert git failed for "' + $_.FullName + '"' } }
+                "Revert git finished" | timestamp | Write-Verbose
+                return;
+            }
+        }
         if ($Args.Count -eq 0) {
             "Fetching V8" | timestamp | Write-Verbose
             cmd.exe /C "fetch v8 2>&1"
@@ -201,21 +215,40 @@ try {
                         $FoundConfigInternalConfigBase=$false
                         $_
                         '    "$target_gen_dir/include",'
-                    } elseif ($_ -match '^config\("internal_config"\) {') {
-                        $FoundConfigInternalConfig=$true
-                        $_
-                    } elseif (($_ -match '^  defines = \[\]') -and ($FoundConfigInternalConfig)) {
-                        $FoundConfigInternalConfig=$false
-                        '  defines = ["_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING"]'
+                    ##} elseif ($_ -match '^config\("internal_config"\) {') {
+                    ##    $FoundConfigInternalConfig=$true
+                    ##    $_
+                    ##} elseif (($_ -match '^  defines = \[\]') -and ($FoundConfigInternalConfig)) {
+                    ##    $FoundConfigInternalConfig=$false
+                    ##    '  defines = ["_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING"]'
                     } else {
                         $_
                     }
                 } |
                 Set-Content BUILD.gn -Force
             #
+            # build\config\win\BUILD.gn
+            #
+            "Adjust build\config\win\BUILD.gn" | timestamp | Write-Verbose
+            $FoundRuntimeLibrary=$false
+            (Get-Content build\config\win\BUILD.gn) |
+                Foreach-Object -process {
+                    if ($_ -match '^config\("runtime_library"\) {') {
+                        $FoundRuntimeLibrary=$true
+                        $_
+                    } elseif (($_ -match '^    "_SCL_SECURE_NO_DEPRECATE",') -and ($FoundRuntimeLibrary)) {
+                        $FoundRuntimeLibrary=$false
+                        $_
+                        '    "_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING",'
+                    } else {
+                        $_
+                    }
+                } |
+                Set-Content build\config\win\BUILD.gn -Force
+            #
             # tools\v8windbg\BUILD.gn
             #
-            "Adjust v8 source set of target v8windbg_test in tools\v8windbg\BUILD.gn" | timestamp | Write-Verbose
+            "Adjust tools\v8windbg\BUILD.gn" | timestamp | Write-Verbose
             $FoundV8SoutceSetV8windbgTest=$false
             (Get-Content tools\v8windbg\BUILD.gn) |
                 Foreach-Object -process {
@@ -277,6 +310,60 @@ try {
                 } |
                 Set-Content tools\gen-v8-gn.py -Force
             #
+            # Fix Abseil
+            #
+            "Fix Abseil" | timestamp | Write-Verbose
+            $FoundFirstImport=$false
+            $PathToAbseil = 'C:\build\v8\third_party\abseil-cpp\BUILD.gn'
+            (Get-Content $PathToAbseil) |
+                Foreach-Object -process {
+                    if (($_ -match '^import') -and !$FoundFirstImport) {
+                        $FoundFirstImport=$true
+                        'is_clang=false'
+                        ''
+                        $_
+                    } else {
+                        $_
+                    }
+                } |
+                Set-Content $PathToAbseil
+            $PathToAbseil = 'C:\build\v8\third_party\abseil-cpp\absl/meta/type_traits_test.cc'
+            (Get-Content $PathToAbseil) |
+                Foreach-Object -process {
+                    if ($_ -match '^class Trivial {') {
+                        '#pragma GCC diagnostic ignored "-Wunused-private-field"'
+                        $_
+                    } else {
+                        $_
+                    }
+                } |
+                Set-Content $PathToAbseil
+            $PathToAbseil = 'C:\build\v8\third_party\abseil-cpp\absl/strings/internal/str_split_internal.h'
+            (Get-Content $PathToAbseil) |
+                Foreach-Object -process {
+                    if ($_ -match '^^        v\.insert\(v\.end\(\), ar\.begin\(\), ar\.begin\(\) \+ index\);') {
+                        '        v.insert(v.end(), ar.begin(), ar.begin() + (long long)index);'
+                    } else {
+                        $_
+                    }
+                } |
+                Set-Content $PathToAbseil
+
+
+            $FirstLine=$false
+            $PathToAbseil = 'C:\build\v8\third_party\abseil-cpp/absl/types/variant_test.cc'
+            (Get-Content $PathToAbseil) |
+                Foreach-Object -process {
+                    if (!$FirstLine) {
+                        $FirstLine=$true
+                        '#pragma GCC diagnostic ignored "-Wunused-function"'
+                        $_
+                    } else {
+                        $_
+                    }
+                } |
+                Set-Content $PathToAbseil
+            #
             # Debug
             #
             "V8 Debug Setup" | timestamp | Write-Verbose
@@ -329,17 +416,20 @@ try {
             # Fix age-table-unittest.cc
             #
             "Fix age-table-unittest.cc" | timestamp | Write-Verbose
-            (Get-Content test/unittests/heap/cppgc/age-table-unittest.cc) |
+            $PathToage_table_unittest = 'C:\build\v8\test/unittests/heap/cppgc/age-table-unittest.cc'
+            (Get-Content $PathToage_table_unittest) |
                 Foreach-Object -process {
-                    if ($_ -match '^  void\* heap_end = heap_start \+ kCagedHeapReservationSize - 1;') {
-                        '  void* heap_end = heap_start + api_constants::kCagedHeapDefaultReservationSize - 1;'
+                    if ($_ -match '^   void\* heap_end = heap_start \+ api_constants::kCagedHeapReservationSize - 1;') {
+                        '   void* heap_end = heap_start + api_constants::kCagedHeapDefaultReservationSize - 1;'
                     } elseif ($_ -match '^      api_constants::kCagedHeapReservationSize \* 4\);') {
                         '      api_constants::kCagedHeapDefaultReservationSize * 4);'
                     } else {
                         $_
                     }
                 } |
-                Set-Content test/unittests/heap/cppgc/age-table-unittest.cc -Force
+                Set-Content $PathToage_table_unittest
+            ## build\v8\test/unittests/heap/cppgc/age-table-unittest.cc:201:   void* heap_end = heap_start + api_constants::kCagedHeapDefaultReservationSize - 1;
+            ## build\v8\test/unittests/heap/cppgc/age-table-unittest.cc:215:      api_constants::kCagedHeapDefaultReservationSize * 4);
             #
             # Fix asm_to_inline_asm.py
             #
@@ -359,6 +449,46 @@ try {
                     }
                 } |
                 Set-Content $PathToasm_to_inline_asm
+            #
+            # Fix .\test\unittests\heap\shared-heap-unittest.cc
+            #
+            ##"Fix shared-heap-unittest.cc" | timestamp | Write-Verbose
+            ##Push-Location .\test\unittests\heap
+            ##try {
+            ##    (Get-Content shared-heap-unittest.cc) |
+            ##        Foreach-Object -process {
+            ##            if ($_ -match '^  using ThreadType = TestType::ThreadType;')
+            ##            {
+            ##                '  using ThreadType = typename TestType::ThreadType;'
+            ##            } else {
+            ##                $_
+            ##            }
+            ##        } |
+            ##        Set-Content shared-heap-unittest.cc -Force
+            ##}
+            ##finally {
+            ##    Pop-Location
+            ##}
+            #
+            # Fix .\include\v8-platform.h
+            #
+            ##"Fix v8-platform.h" | timestamp | Write-Verbose
+            ##Push-Location .\include
+            ##try {
+            ##    (Get-Content v8-platform.h) |
+            ##        Foreach-Object -process {
+            ##            if ($_ -match '^    return floor\(CurrentClockTimeMillis\(\)\);')
+            ##            {
+            ##                '    return static_cast<int64_t>(floor(CurrentClockTimeMillis()));'
+            ##            } else {
+            ##                $_
+            ##            }
+            ##        } |
+            ##        Set-Content v8-platform.h -Force
+            ##}
+            ##finally {
+            ##    Pop-Location
+            ##}
             #
             # Build Debug and Release
             #
