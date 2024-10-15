@@ -18,7 +18,11 @@
 
         [switch]
         # Specifies that any modified git files are reverted to the original git content including submodules. This is normally the files that this script modifies, however any modified git file will be reverted. USE WITH CARE.
-        $RevertGit
+        $RevertGit,
+
+        [switch]
+        # Specifies that pre-gen and post-gen (before and after the "gn gen" command) modifications are made so that building V8 works.
+        $MakeItWork
     )
     Begin {
         $ElapsedTotal = [System.Diagnostics.Stopwatch]::StartNew()
@@ -275,210 +279,214 @@ cppgc_enable_young_generation=true
                     Throw "gcclient sync failed"
                 }
                 "GITing version $V8Version of V8 Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
-                ##########
-                # Step 8 #
-                ##########
-                # Adjust files pre-gen
-                "Adjust files pre-gen" | timestamp | Write-Verbose
-                $Elapsed = [System.Diagnostics.Stopwatch]::StartNew()
-                $CurrentStep++
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                # BUILD.gn
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust BUILD.gn" | timestamp | Write-Verbose
-                $FoundCppgcBaseConfig=$false
-                $FoundActionGenV8Gn=$false
-                $FoundSourceSetCppgcBase=$false
-                $FoundConfigInternalConfigBase=$false
-                $FoundConfigInternalConfig=$false
-                (Get-Content BUILD.gn) |
-                    Foreach-Object -process {
-                        if ($_ -match '^config\("cppgc_base_config"\) {') {
-                            $FoundCppgcBaseConfig=$true
-                            $_
-                        } elseif (($_ -match '^  if \(cppgc_is_standalone\) {') -and ($FoundCppgcBaseConfig)) {
-                            $FoundCppgcBaseConfig=$false
-                            '  if (cppgc_enable_young_generation) {'
-                            '    defines += [ "CPPGC_YOUNG_GENERATION" ]'
-                            '  }'
-                            $_
-                        } elseif ($_ -match '^}') {
-                            $FoundCppgcBaseConfig=$false
-                            $_
-                        } elseif ($_ -match '^  action\("gen_v8_gn"\) {') {
-                            $FoundActionGenV8Gn=$true
-                            $_
-                        } elseif (($_ -match '^    visibility = \[ ":\*" \]') -and ($FoundActionGenV8Gn)) {
-                            $FoundActionGenV8Gn=$false
-                            '    visibility = ['
-                            '      ":*",'
-                            '      "tools\v8windbg\:*"'
-                            '    ]'
-                        } elseif ($_ -match '^v8_source_set\("cppgc_base"\) {') {
-                            $FoundSourceSetCppgcBase=$true
-                            $_
-                        } elseif (($_ -match '^}') -and ($FoundSourceSetCppgcBase)) {
-                            $FoundSourceSetCppgcBase=$false
-                            ''
-                            '  if (v8_generate_external_defines_header) {'
-                            '    sources += [ "$target_gen_dir/include/v8-gn.h" ]'
-                            '    include_dirs = [ "$target_gen_dir/include" ]'
-                            '    public_deps += [ ":gen_v8_gn" ]'
-                            '  }'
-                            $_
-                        } elseif ($_ -match '^config\("internal_config_base"\) {') {
-                            $FoundConfigInternalConfigBase=$true
-                            $_
-                        } elseif (($_ -match '^    "\$target_gen_dir",') -and ($FoundConfigInternalConfigBase)) {
-                            $FoundConfigInternalConfigBase=$false
-                            $_
-                            '    "$target_gen_dir/include",'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content BUILD.gn -Force
-                # build\config\win\BUILD.gn
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "build\config\win\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust build\config\win\BUILD.gn" | timestamp | Write-Verbose
-                $FoundRuntimeLibrary=$false
-                (Get-Content build\config\win\BUILD.gn) |
-                    Foreach-Object -process {
-                        if ($_ -match '^config\("runtime_library"\) {') {
-                            $FoundRuntimeLibrary=$true
-                            $_
-                        } elseif (($_ -match '^    "_SCL_SECURE_NO_DEPRECATE",') -and ($FoundRuntimeLibrary)) {
-                            $FoundRuntimeLibrary=$false
-                            $_
-                            '    "_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING",'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content build\config\win\BUILD.gn -Force
-                # tools\v8windbg\BUILD.gn
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "tools\v8windbg\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust tools\v8windbg\BUILD.gn" | timestamp | Write-Verbose
-                $FoundV8SoutceSetV8windbgTest=$false
-                (Get-Content tools\v8windbg\BUILD.gn) |
-                    Foreach-Object -process {
-                        if ($_ -match '^v8_source_set\("v8windbg_test"\) {') {
-                            $FoundV8SoutceSetV8windbgTest=$true
-                            $_
-                        } elseif (($_ -match '^}') -and ($FoundV8SoutceSetV8windbgTest)) {
-                            $FoundV8SoutceSetV8windbgTest=$false
-                            ''
-                            '  sources += [ "../../out/Debug/gen/include/v8-gn.h" ]'
-                            '  deps += [ "../..:gen_v8_gn" ]'
-                            $_
-                        } elseif ($_ -match '^config\("v8windbg_config"\) {') {
-                            $_
-                            '  configs = [ "../..:internal_config_base" ]'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content tools\v8windbg\BUILD.gn -Force
-                # tools\gen-v8-gn.py
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "tools\gen-v8-gn.py" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust tools\gen-v8-gn.py" | timestamp | Write-Verbose
-                $SkipLines = 0
-                (Get-Content tools\gen-v8-gn.py) |
-                    Foreach-Object -process {
-                        if ($_ -match '^def generate_positive_definition\(out, define\):') {
-                            $_
-                            '  if define.find("=") >= 0:'
-                            '    [define, value] = define.split("=")'
-                            '    out.write('''''''
-                            '#ifndef {define}'
-                            '#define {define} {value}'
-                            '#else'
-                            '#if {define} != {value}'
-                            '#error "{define} defined but not set to {value}"'
-                            '#endif'
-                            '#endif  // {define}'
-                            '''''''.format(define=define, value=value))'
-                            '  else:'
-                            '    out.write('''''''
-                            '#ifndef {define}'
-                            '#define {define} 1'
-                            '#else'
-                            '#if {define} != 1'
-                            '#error "{define} defined but not set to 1"'
-                            '#endif'
-                            '#endif  // {define}'
-                            '''''''.format(define=define))'
-                            $SkipLines = 9
-                        } else {
-                            if ($SkipLines -le 0) {
+                if ($MakeItWork) {
+                    ##########
+                    # Step 8 #
+                    ##########
+                    # Adjust files pre-gen
+                    "Adjust files pre-gen" | timestamp | Write-Verbose
+                    $Elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+                    $CurrentStep++
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    # BUILD.gn
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust BUILD.gn" | timestamp | Write-Verbose
+                    $FoundCppgcBaseConfig=$false
+                    $FoundActionGenV8Gn=$false
+                    $FoundSourceSetCppgcBase=$false
+                    $FoundConfigInternalConfigBase=$false
+                    $FoundConfigInternalConfig=$false
+                    (Get-Content BUILD.gn) |
+                        Foreach-Object -process {
+                            if ($_ -match '^config\("cppgc_base_config"\) {') {
+                                $FoundCppgcBaseConfig=$true
+                                $_
+                            } elseif (($_ -match '^  if \(cppgc_is_standalone\) {') -and ($FoundCppgcBaseConfig)) {
+                                $FoundCppgcBaseConfig=$false
+                                '  if (cppgc_enable_young_generation) {'
+                                '    defines += [ "CPPGC_YOUNG_GENERATION" ]'
+                                '  }'
+                                $_
+                            } elseif ($_ -match '^}') {
+                                $FoundCppgcBaseConfig=$false
+                                $_
+                            } elseif ($_ -match '^  action\("gen_v8_gn"\) {') {
+                                $FoundActionGenV8Gn=$true
+                                $_
+                            } elseif (($_ -match '^    visibility = \[ ":\*" \]') -and ($FoundActionGenV8Gn)) {
+                                $FoundActionGenV8Gn=$false
+                                '    visibility = ['
+                                '      ":*",'
+                                '      "tools\v8windbg\:*"'
+                                '    ]'
+                            } elseif ($_ -match '^v8_source_set\("cppgc_base"\) {') {
+                                $FoundSourceSetCppgcBase=$true
+                                $_
+                            } elseif (($_ -match '^}') -and ($FoundSourceSetCppgcBase)) {
+                                $FoundSourceSetCppgcBase=$false
+                                ''
+                                '  if (v8_generate_external_defines_header) {'
+                                '    sources += [ "$target_gen_dir/include/v8-gn.h" ]'
+                                '    include_dirs = [ "$target_gen_dir/include" ]'
+                                '    public_deps += [ ":gen_v8_gn" ]'
+                                '  }'
+                                $_
+                            } elseif ($_ -match '^config\("internal_config_base"\) {') {
+                                $FoundConfigInternalConfigBase=$true
+                                $_
+                            } elseif (($_ -match '^    "\$target_gen_dir",') -and ($FoundConfigInternalConfigBase)) {
+                                $FoundConfigInternalConfigBase=$false
+                                $_
+                                '    "$target_gen_dir/include",'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content BUILD.gn -Force
+                    # build\config\win\BUILD.gn
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "build\config\win\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust build\config\win\BUILD.gn" | timestamp | Write-Verbose
+                    $FoundRuntimeLibrary=$false
+                    (Get-Content build\config\win\BUILD.gn) |
+                        Foreach-Object -process {
+                            if ($_ -match '^config\("runtime_library"\) {') {
+                                $FoundRuntimeLibrary=$true
+                                $_
+                            } elseif (($_ -match '^    "_SCL_SECURE_NO_DEPRECATE",') -and ($FoundRuntimeLibrary)) {
+                                $FoundRuntimeLibrary=$false
+                                $_
+                                '    "_SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING",'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content build\config\win\BUILD.gn -Force
+                    # tools\v8windbg\BUILD.gn
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "tools\v8windbg\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust tools\v8windbg\BUILD.gn" | timestamp | Write-Verbose
+                    $FoundV8SoutceSetV8windbgTest=$false
+                    (Get-Content tools\v8windbg\BUILD.gn) |
+                        Foreach-Object -process {
+                            if ($_ -match '^v8_source_set\("v8windbg_test"\) {') {
+                                $FoundV8SoutceSetV8windbgTest=$true
+                                $_
+                            } elseif (($_ -match '^}') -and ($FoundV8SoutceSetV8windbgTest)) {
+                                $FoundV8SoutceSetV8windbgTest=$false
+                                ''
+                                '  sources += [ "../../out/Debug/gen/include/v8-gn.h" ]'
+                                '  deps += [ "../..:gen_v8_gn" ]'
+                                $_
+                            } elseif ($_ -match '^config\("v8windbg_config"\) {') {
+                                $_
+                                '  configs = [ "../..:internal_config_base" ]'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content tools\v8windbg\BUILD.gn -Force
+                    # tools\gen-v8-gn.py
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "tools\gen-v8-gn.py" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust tools\gen-v8-gn.py" | timestamp | Write-Verbose
+                    $SkipLines = 0
+                    (Get-Content tools\gen-v8-gn.py) |
+                        Foreach-Object -process {
+                            if ($_ -match '^def generate_positive_definition\(out, define\):') {
+                                $_
+                                '  if define.find("=") >= 0:'
+                                '    [define, value] = define.split("=")'
+                                '    out.write('''''''
+                                '#ifndef {define}'
+                                '#define {define} {value}'
+                                '#else'
+                                '#if {define} != {value}'
+                                '#error "{define} defined but not set to {value}"'
+                                '#endif'
+                                '#endif  // {define}'
+                                '''''''.format(define=define, value=value))'
+                                '  else:'
+                                '    out.write('''''''
+                                '#ifndef {define}'
+                                '#define {define} 1'
+                                '#else'
+                                '#if {define} != 1'
+                                '#error "{define} defined but not set to 1"'
+                                '#endif'
+                                '#endif  // {define}'
+                                '''''''.format(define=define))'
+                                $SkipLines = 9
+                            } else {
+                                if ($SkipLines -le 0) {
+                                    $_
+                                } else {
+                                    $SkipLines--
+                                }
+                            }
+                        } |
+                        Set-Content tools\gen-v8-gn.py -Force
+                    # third_party\abseil-cpp\BUILD.gn
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\BUILD.gn" | timestamp | Write-Verbose
+                    $FoundFirstImport=$false
+                    $PathToAbseil = 'third_party\abseil-cpp\BUILD.gn'
+                    (Get-Content $PathToAbseil) |
+                        Foreach-Object -process {
+                            if (($_ -match '^import') -and !$FoundFirstImport) {
+                                $FoundFirstImport=$true
+                                'is_clang=false'
+                                ''
                                 $_
                             } else {
-                                $SkipLines--
+                                $_
                             }
-                        }
-                    } |
-                    Set-Content tools\gen-v8-gn.py -Force
-                # third_party\abseil-cpp\BUILD.gn
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\BUILD.gn" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\BUILD.gn" | timestamp | Write-Verbose
-                $FoundFirstImport=$false
-                $PathToAbseil = 'third_party\abseil-cpp\BUILD.gn'
-                (Get-Content $PathToAbseil) |
-                    Foreach-Object -process {
-                        if (($_ -match '^import') -and !$FoundFirstImport) {
-                            $FoundFirstImport=$true
-                            'is_clang=false'
-                            ''
-                            $_
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToAbseil
-                # third_party\abseil-cpp\absl/meta/type_traits_test.cc
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\absl/meta/type_traits_test.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl/meta/type_traits_test.cc" | timestamp | Write-Verbose
-                $PathToAbseil = 'third_party\abseil-cpp\absl/meta/type_traits_test.cc'
-                (Get-Content $PathToAbseil) |
-                    Foreach-Object -process {
-                        if ($_ -match '^class Trivial {') {
-                            '#pragma GCC diagnostic ignored "-Wunused-private-field"'
-                            $_
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToAbseil
-                # third_party\abseil-cpp\absl/strings/internal/str_split_internal.h
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\absl/strings/internal/str_split_internal.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl/strings/internal/str_split_internal.h" | timestamp | Write-Verbose
-                $PathToAbseil = 'third_party\abseil-cpp\absl/strings/internal/str_split_internal.h'
-                (Get-Content $PathToAbseil) |
-                    Foreach-Object -process {
-                        if ($_ -match '^^        v\.insert\(v\.end\(\), ar\.begin\(\), ar\.begin\(\) \+ index\);') {
-                            '        v.insert(v.end(), ar.begin(), ar.begin() + (long long)index);'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToAbseil
-                # third_party\abseil-cpp/absl/types/variant_test.cc
-                Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp/absl/types/variant_test.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp/absl/types/variant_test.cc" | timestamp | Write-Verbose
-                $FirstLine=$false
-                $PathToAbseil = 'third_party\abseil-cpp/absl/types/variant_test.cc'
-                (Get-Content $PathToAbseil) |
-                    Foreach-Object -process {
-                        if (!$FirstLine) {
-                            $FirstLine=$true
-                            '#pragma GCC diagnostic ignored "-Wunused-function"'
-                            $_
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToAbseil
-                "Adjust files pre-gen Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
+                        } |
+                        Set-Content $PathToAbseil
+                    # third_party\abseil-cpp\absl/meta/type_traits_test.cc
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\absl/meta/type_traits_test.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl/meta/type_traits_test.cc" | timestamp | Write-Verbose
+                    $PathToAbseil = 'third_party\abseil-cpp\absl/meta/type_traits_test.cc'
+                    (Get-Content $PathToAbseil) |
+                        Foreach-Object -process {
+                            if ($_ -match '^class Trivial {') {
+                                '#pragma GCC diagnostic ignored "-Wunused-private-field"'
+                                $_
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content $PathToAbseil
+                    # third_party\abseil-cpp\absl/strings/internal/str_split_internal.h
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp\absl/strings/internal/str_split_internal.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl/strings/internal/str_split_internal.h" | timestamp | Write-Verbose
+                    $PathToAbseil = 'third_party\abseil-cpp\absl/strings/internal/str_split_internal.h'
+                    (Get-Content $PathToAbseil) |
+                        Foreach-Object -process {
+                            if ($_ -match '^^        v\.insert\(v\.end\(\), ar\.begin\(\), ar\.begin\(\) \+ index\);') {
+                                '        v.insert(v.end(), ar.begin(), ar.begin() + (long long)index);'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content $PathToAbseil
+                    # third_party\abseil-cpp/absl/types/variant_test.cc
+                    Write-Progress -Activity $Activity -Status "Adjust files pre-gen" -CurrentOperation "third_party\abseil-cpp/absl/types/variant_test.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp/absl/types/variant_test.cc" | timestamp | Write-Verbose
+                    $FirstLine=$false
+                    $PathToAbseil = 'third_party\abseil-cpp/absl/types/variant_test.cc'
+                    (Get-Content $PathToAbseil) |
+                        Foreach-Object -process {
+                            if (!$FirstLine) {
+                                $FirstLine=$true
+                                '#pragma GCC diagnostic ignored "-Wunused-function"'
+                                $_
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content $PathToAbseil
+                    "Adjust files pre-gen Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
+                } else {
+                    "Skipping adjust files pre-gen" | timestamp | Write-Verbose
+                }
                 ##########
                 # Step 9 #
                 ##########
@@ -543,154 +551,158 @@ cppgc_enable_young_generation=true
                     Throw "gn gen failed for VisualStudio"
                 }
                 "VisualStudio GEN Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
-                ###########
-                # Step 12 #
-                ###########
-                # Adjust files post-gen
-                "Adjust files post-gen" | timestamp | Write-Verbose
-                $Elapsed = [System.Diagnostics.Stopwatch]::StartNew()
-                $CurrentStep++
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                # third_party\abseil-cpp\absl\container\internal\raw_hash_set.h
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\container\internal\raw_hash_set.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\container\internal\raw_hash_set.h" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.h) |
-                    Foreach-Object -process {
-                        if ($_ -match '^class HashSetResizeHelper {') {
-                            'class ABSL_DLL HashSetResizeHelper {'
-                        } elseif ($_ -match '^bool ShouldInsertBackwardsForDebug\(size_t capacity, size_t hash,') {
-                            'ABSL_DLL bool ShouldInsertBackwardsForDebug(size_t capacity, size_t hash,'
-                        } elseif ($_ -match '^size_t PrepareInsertAfterSoo\(size_t hash, size_t slot_size,') {
-                            'ABSL_DLL size_t PrepareInsertAfterSoo(size_t hash, size_t slot_size,'
-                        } elseif ($_ -match '^size_t PrepareInsertNonSoo\(CommonFields& common, size_t hash, FindInfo target,') {
-                            'ABSL_DLL size_t PrepareInsertNonSoo(CommonFields& common, size_t hash, FindInfo target,'
-                        } elseif ($_ -match '^void ClearBackingArray\(CommonFields& c, const PolicyFunctions& policy,') {
-                            'ABSL_DLL void ClearBackingArray(CommonFields& c, const PolicyFunctions& policy,'
-                        } elseif ($_ -match '^extern template FindInfo find_first_non_full\(const CommonFields&, size_t\);') {
-                            'extern template ABSL_DLL FindInfo find_first_non_full(const CommonFields&, size_t);'
-                        } elseif ($_ -match '^FindInfo find_first_non_full_outofline\(const CommonFields&, size_t\);') {
-                            'ABSL_DLL FindInfo find_first_non_full_outofline(const CommonFields&, size_t);'
-                        } elseif ($_ -match '^void EraseMetaOnly\(CommonFields& c, size_t index, size_t slot_size\);') {
-                            'ABSL_DLL void EraseMetaOnly(CommonFields& c, size_t index, size_t slot_size);'
-                        } elseif ($_ -match '^const void\* GetHashRefForEmptyHasher\(const CommonFields& common\);') {
-                            'ABSL_DLL const void* GetHashRefForEmptyHasher(const CommonFields& common);'
-                        } elseif ($_ -match '^    static constexpr PolicyFunctions value = {') {
-                            '    static const PolicyFunctions value = {'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.h -Force
-                # third_party\abseil-cpp\absl\container\internal\raw_hash_set.h
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc) |
-                    Foreach-Object -process {
-                        if ($_ -match '^bool ShouldInsertBackwardsForDebug\(size_t capacity, size_t hash,') {
-                            'ABSL_DLL bool ShouldInsertBackwardsForDebug(size_t capacity, size_t hash,'
-                        } elseif ($_ -match '^size_t PrepareInsertAfterSoo\(size_t hash, size_t slot_size,') {
-                            'ABSL_DLL size_t PrepareInsertAfterSoo(size_t hash, size_t slot_size,'
-                        } elseif ($_ -match '^size_t PrepareInsertNonSoo\(CommonFields& common, size_t hash, FindInfo target,') {
-                            'ABSL_DLL size_t PrepareInsertNonSoo(CommonFields& common, size_t hash, FindInfo target,'
-                        } elseif ($_ -match '^void ClearBackingArray\(CommonFields& c, const PolicyFunctions& policy,') {
-                            'ABSL_DLL void ClearBackingArray(CommonFields& c, const PolicyFunctions& policy,'
-                        } elseif ($_ -match '^FindInfo find_first_non_full_outofline\(const CommonFields& common,') {
-                            'ABSL_DLL FindInfo find_first_non_full_outofline(const CommonFields& common,'
-                        } elseif ($_ -match '^void EraseMetaOnly\(CommonFields& c, size_t index, size_t slot_size\) {') {
-                            'ABSL_DLL void EraseMetaOnly(CommonFields& c, size_t index, size_t slot_size) {'
-                        } elseif ($_ -match '^const void\* GetHashRefForEmptyHasher\(const CommonFields& common\) {') {
-                            'ABSL_DLL const void* GetHashRefForEmptyHasher(const CommonFields& common) {'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc -Force
-                # third_party\abseil-cpp\absl\base\internal\throw_delegate.h
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\throw_delegate.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\base\internal\throw_delegate.h" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.h) |
-                    Foreach-Object -process {
-                        if ($_ -match '^\[\[noreturn]] void ThrowStdOutOfRange\(const std::string& what_arg\);') {
-                            '[[noreturn]] ABSL_DLL void ThrowStdOutOfRange(const std::string& what_arg);'
-                        } elseif ($_ -match '^\[\[noreturn]] void ThrowStdOutOfRange\(const char\* what_arg\);') {
-                            '[[noreturn]] ABSL_DLL void ThrowStdOutOfRange(const char* what_arg);'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.h -Force
-                # third_party\abseil-cpp\absl\base\internal\throw_delegate.cc
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\throw_delegate.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\base\internal\throw_delegate.cc" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.cc) |
-                    Foreach-Object -process {
-                        if ($_ -match '^void ThrowStdOutOfRange\(const std::string& what_arg\) {') {
-                            'ABSL_DLL void ThrowStdOutOfRange(const std::string& what_arg) {'
-                        } elseif ($_ -match '^void ThrowStdOutOfRange(const char* what_arg) {') {
-                            'ABSL_DLL void ThrowStdOutOfRange(const char* what_arg) {'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.cc -Force
-                # third_party\abseil-cpp\absl\base\internal\raw_logging.h
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\raw_logging.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\base\internal\raw_logging.h" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.h) |
-                    Foreach-Object -process {
-                        if ($_ -match '^void RawLog\(absl::LogSeverity severity, const char\* file, int line,') {
-                            'ABSL_DLL void RawLog(absl::LogSeverity severity, const char* file, int line,'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.h -Force
-                # third_party\abseil-cpp\absl\base\internal\raw_logging.cc
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\raw_logging.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\abseil-cpp\absl\base\internal\raw_logging.cc" | timestamp | Write-Verbose
-                (Get-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.cc) |
-                    Foreach-Object -process {
-                        if ($_ -match '^void RawLog\(absl::LogSeverity severity, const char\* file, int line,') {
-                            'ABSL_DLL void RawLog(absl::LogSeverity severity, const char* file, int line,'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.cc -Force
-                # test/unittests/heap/cppgc/age-table-unittest.cc
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "test/unittests/heap/cppgc/age-table-unittest.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust test/unittests/heap/cppgc/age-table-unittest.cc" | timestamp | Write-Verbose
-                $PathToage_table_unittest = 'test/unittests/heap/cppgc/age-table-unittest.cc'
-                (Get-Content $PathToage_table_unittest) |
-                    Foreach-Object -process {
-                        if ($_ -match '^   void\* heap_end = heap_start \+ api_constants::kCagedHeapReservationSize - 1;') {
-                            '   void* heap_end = heap_start + api_constants::kCagedHeapDefaultReservationSize - 1;'
-                        } elseif ($_ -match '^      api_constants::kCagedHeapReservationSize \* 4\);') {
-                            '      api_constants::kCagedHeapDefaultReservationSize * 4);'
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToage_table_unittest
-                # third_party\icu\scripts\asm_to_inline_asm.py
-                Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\icu\scripts\asm_to_inline_asm.py" -PercentComplete ($CurrentStep / $TotalSteps * 100)
-                "Adjust third_party\icu\scripts\asm_to_inline_asm.py" | timestamp | Write-Verbose
-                $PathToasm_to_inline_asm = 'third_party\icu\scripts\asm_to_inline_asm.py'
-                (Get-Content $PathToasm_to_inline_asm) |
-                    Foreach-Object -process {
-                        if ($_ -match '^[ \t]*with(.*)wb(.*)')
-                        {
-                            '  with open(in_filename, ''r'') as infile, open(out_filename, ''w'') as outfile:'
-                        } elseif ($_ -match '^[ \t]*line = line.replace.*')
-                        {
-                            '      line = line.replace(''_icudt'', ''icudt'')'
-                            $_
-                        } else {
-                            $_
-                        }
-                    } |
-                    Set-Content $PathToasm_to_inline_asm
-                "Adjust files post-gen Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
+                if ($MakeItWork) {
+                    ###########
+                    # Step 12 #
+                    ###########
+                    # Adjust files post-gen
+                    "Adjust files post-gen" | timestamp | Write-Verbose
+                    $Elapsed = [System.Diagnostics.Stopwatch]::StartNew()
+                    $CurrentStep++
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    # third_party\abseil-cpp\absl\container\internal\raw_hash_set.h
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\container\internal\raw_hash_set.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\container\internal\raw_hash_set.h" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.h) |
+                        Foreach-Object -process {
+                            if ($_ -match '^class HashSetResizeHelper {') {
+                                'class ABSL_DLL HashSetResizeHelper {'
+                            } elseif ($_ -match '^bool ShouldInsertBackwardsForDebug\(size_t capacity, size_t hash,') {
+                                'ABSL_DLL bool ShouldInsertBackwardsForDebug(size_t capacity, size_t hash,'
+                            } elseif ($_ -match '^size_t PrepareInsertAfterSoo\(size_t hash, size_t slot_size,') {
+                                'ABSL_DLL size_t PrepareInsertAfterSoo(size_t hash, size_t slot_size,'
+                            } elseif ($_ -match '^size_t PrepareInsertNonSoo\(CommonFields& common, size_t hash, FindInfo target,') {
+                                'ABSL_DLL size_t PrepareInsertNonSoo(CommonFields& common, size_t hash, FindInfo target,'
+                            } elseif ($_ -match '^void ClearBackingArray\(CommonFields& c, const PolicyFunctions& policy,') {
+                                'ABSL_DLL void ClearBackingArray(CommonFields& c, const PolicyFunctions& policy,'
+                            } elseif ($_ -match '^extern template FindInfo find_first_non_full\(const CommonFields&, size_t\);') {
+                                'extern template ABSL_DLL FindInfo find_first_non_full(const CommonFields&, size_t);'
+                            } elseif ($_ -match '^FindInfo find_first_non_full_outofline\(const CommonFields&, size_t\);') {
+                                'ABSL_DLL FindInfo find_first_non_full_outofline(const CommonFields&, size_t);'
+                            } elseif ($_ -match '^void EraseMetaOnly\(CommonFields& c, size_t index, size_t slot_size\);') {
+                                'ABSL_DLL void EraseMetaOnly(CommonFields& c, size_t index, size_t slot_size);'
+                            } elseif ($_ -match '^const void\* GetHashRefForEmptyHasher\(const CommonFields& common\);') {
+                                'ABSL_DLL const void* GetHashRefForEmptyHasher(const CommonFields& common);'
+                            } elseif ($_ -match '^    static constexpr PolicyFunctions value = {') {
+                                '    static const PolicyFunctions value = {'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.h -Force
+                    # third_party\abseil-cpp\absl\container\internal\raw_hash_set.h
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc) |
+                        Foreach-Object -process {
+                            if ($_ -match '^bool ShouldInsertBackwardsForDebug\(size_t capacity, size_t hash,') {
+                                'ABSL_DLL bool ShouldInsertBackwardsForDebug(size_t capacity, size_t hash,'
+                            } elseif ($_ -match '^size_t PrepareInsertAfterSoo\(size_t hash, size_t slot_size,') {
+                                'ABSL_DLL size_t PrepareInsertAfterSoo(size_t hash, size_t slot_size,'
+                            } elseif ($_ -match '^size_t PrepareInsertNonSoo\(CommonFields& common, size_t hash, FindInfo target,') {
+                                'ABSL_DLL size_t PrepareInsertNonSoo(CommonFields& common, size_t hash, FindInfo target,'
+                            } elseif ($_ -match '^void ClearBackingArray\(CommonFields& c, const PolicyFunctions& policy,') {
+                                'ABSL_DLL void ClearBackingArray(CommonFields& c, const PolicyFunctions& policy,'
+                            } elseif ($_ -match '^FindInfo find_first_non_full_outofline\(const CommonFields& common,') {
+                                'ABSL_DLL FindInfo find_first_non_full_outofline(const CommonFields& common,'
+                            } elseif ($_ -match '^void EraseMetaOnly\(CommonFields& c, size_t index, size_t slot_size\) {') {
+                                'ABSL_DLL void EraseMetaOnly(CommonFields& c, size_t index, size_t slot_size) {'
+                            } elseif ($_ -match '^const void\* GetHashRefForEmptyHasher\(const CommonFields& common\) {') {
+                                'ABSL_DLL const void* GetHashRefForEmptyHasher(const CommonFields& common) {'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\container\internal\raw_hash_set.cc -Force
+                    # third_party\abseil-cpp\absl\base\internal\throw_delegate.h
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\throw_delegate.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\base\internal\throw_delegate.h" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.h) |
+                        Foreach-Object -process {
+                            if ($_ -match '^\[\[noreturn]] void ThrowStdOutOfRange\(const std::string& what_arg\);') {
+                                '[[noreturn]] ABSL_DLL void ThrowStdOutOfRange(const std::string& what_arg);'
+                            } elseif ($_ -match '^\[\[noreturn]] void ThrowStdOutOfRange\(const char\* what_arg\);') {
+                                '[[noreturn]] ABSL_DLL void ThrowStdOutOfRange(const char* what_arg);'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.h -Force
+                    # third_party\abseil-cpp\absl\base\internal\throw_delegate.cc
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\throw_delegate.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\base\internal\throw_delegate.cc" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.cc) |
+                        Foreach-Object -process {
+                            if ($_ -match '^void ThrowStdOutOfRange\(const std::string& what_arg\) {') {
+                                'ABSL_DLL void ThrowStdOutOfRange(const std::string& what_arg) {'
+                            } elseif ($_ -match '^void ThrowStdOutOfRange(const char* what_arg) {') {
+                                'ABSL_DLL void ThrowStdOutOfRange(const char* what_arg) {'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\base\internal\throw_delegate.cc -Force
+                    # third_party\abseil-cpp\absl\base\internal\raw_logging.h
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\raw_logging.h" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\base\internal\raw_logging.h" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.h) |
+                        Foreach-Object -process {
+                            if ($_ -match '^void RawLog\(absl::LogSeverity severity, const char\* file, int line,') {
+                                'ABSL_DLL void RawLog(absl::LogSeverity severity, const char* file, int line,'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.h -Force
+                    # third_party\abseil-cpp\absl\base\internal\raw_logging.cc
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\abseil-cpp\absl\base\internal\raw_logging.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\abseil-cpp\absl\base\internal\raw_logging.cc" | timestamp | Write-Verbose
+                    (Get-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.cc) |
+                        Foreach-Object -process {
+                            if ($_ -match '^void RawLog\(absl::LogSeverity severity, const char\* file, int line,') {
+                                'ABSL_DLL void RawLog(absl::LogSeverity severity, const char* file, int line,'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content .\third_party\abseil-cpp\absl\base\internal\raw_logging.cc -Force
+                    # test/unittests/heap/cppgc/age-table-unittest.cc
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "test/unittests/heap/cppgc/age-table-unittest.cc" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust test/unittests/heap/cppgc/age-table-unittest.cc" | timestamp | Write-Verbose
+                    $PathToage_table_unittest = 'test/unittests/heap/cppgc/age-table-unittest.cc'
+                    (Get-Content $PathToage_table_unittest) |
+                        Foreach-Object -process {
+                            if ($_ -match '^   void\* heap_end = heap_start \+ api_constants::kCagedHeapReservationSize - 1;') {
+                                '   void* heap_end = heap_start + api_constants::kCagedHeapDefaultReservationSize - 1;'
+                            } elseif ($_ -match '^      api_constants::kCagedHeapReservationSize \* 4\);') {
+                                '      api_constants::kCagedHeapDefaultReservationSize * 4);'
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content $PathToage_table_unittest
+                    # third_party\icu\scripts\asm_to_inline_asm.py
+                    Write-Progress -Activity $Activity -Status "Adjust files post-gen" -CurrentOperation "third_party\icu\scripts\asm_to_inline_asm.py" -PercentComplete ($CurrentStep / $TotalSteps * 100)
+                    "Adjust third_party\icu\scripts\asm_to_inline_asm.py" | timestamp | Write-Verbose
+                    $PathToasm_to_inline_asm = 'third_party\icu\scripts\asm_to_inline_asm.py'
+                    (Get-Content $PathToasm_to_inline_asm) |
+                        Foreach-Object -process {
+                            if ($_ -match '^[ \t]*with(.*)wb(.*)')
+                            {
+                                '  with open(in_filename, ''r'') as infile, open(out_filename, ''w'') as outfile:'
+                            } elseif ($_ -match '^[ \t]*line = line.replace.*')
+                            {
+                                '      line = line.replace(''_icudt'', ''icudt'')'
+                                $_
+                            } else {
+                                $_
+                            }
+                        } |
+                        Set-Content $PathToasm_to_inline_asm
+                    "Adjust files post-gen Done in $($Elapsed.Stop(); $Elapsed.Elapsed.ToString())" | timestamp | Write-Verbose
+                } else {
+                    "Skipping adjust files post-gen" | timestamp | Write-Verbose
+                }
                 ###########
                 # Step 13 #
                 ###########
